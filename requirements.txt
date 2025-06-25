@@ -1,0 +1,6 @@
+python-telegram-bot==20.7
+yt-dlp
+requests
+python-dotenv==1.0.0
+ffmpeg-python
+Flask==3.0.0

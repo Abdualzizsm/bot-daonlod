@@ -1,0 +1,60 @@
+# ملفات البيئة والأسرار
+.env
+*.env
+
+# ملفات الإحصائيات والبيانات
+bot_stats.json
+*.json
+
+# مجلدات البيئة الافتراضية
+venv/
+env/
+.venv/
+
+# ملفات Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ملفات التحميل المؤقتة
+temp/
+downloads/
+*.mp4
+*.mp3
+*.webm
+*.m4a
+
+# ملفات السجلات
+*.log
+logs/
+
+# ملفات النظام
+.DS_Store
+Thumbs.db
+
+# ملفات IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ملفات النسخ الاحتياطية
+*.bak
+*.backup
