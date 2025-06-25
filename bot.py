@@ -450,178 +450,274 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # بدء التحميل
     if download_type == "video":
-        await download_video(query, url, "best")
+        await download_video(query, url, "best[ext=mp4]/best")
     elif download_type == "audio":
         await download_audio(query, url)
     
     # حذف الرابط من الذاكرة المؤقتة
     del TEMP_URLS[url_hash]
 
-async def download_video(query, url: str, quality: str):
+MAX_FILE_SIZE = 50 * 1024 * 1024
+
+async def download_video(query, url, format_selector):
     """تحميل الفيديو"""
     try:
         await query.edit_message_text("🎬 *بدء تحميل الفيديو...*", parse_mode=ParseMode.MARKDOWN)
         
-        # إعداد yt-dlp للفيديو
+        # إعدادات yt-dlp المحدثة لتجنب مشاكل YouTube
         ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': format_selector,
             'outtmpl': os.path.join(DOWNLOAD_PATH, '%(title)s.%(ext)s'),
             'noplaylist': True,
             'extract_flat': False,
+            'writethumbnail': False,
+            'writeinfojson': False,
+            'ignoreerrors': True,
+            'no_warnings': False,
+            'quiet': False,
+            # إعدادات خاصة بـ YouTube لتجنب bot detection
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_skip': ['configs', 'webpage'],
+                    'player_client': ['android', 'web']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip,deflate',
+                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+                'Keep-Alive': '300',
+                'Connection': 'keep-alive',
+            },
+            'extractor_retries': 3,
+            'fragment_retries': 3,
+            'retry_sleep_functions': {
+                'http': lambda n: min(4 ** n, 60),
+                'fragment': lambda n: min(4 ** n, 60),
+                'extractor': lambda n: min(4 ** n, 60)
+            },
+            # إعدادات إضافية لتجنب القيود
+            'sleep_interval': 1,
+            'max_sleep_interval': 5,
+            'sleep_interval_subtitles': 0
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # استخراج معلومات الفيديو
+            # الحصول على معلومات الفيديو أولاً
             info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'فيديو')
+            title = info.get('title', 'Unknown')
             duration = info.get('duration', 0)
-            uploader = info.get('uploader', 'غير محدد')
+            uploader = info.get('uploader', 'Unknown')
             
-            # تحديث الرسالة
-            await query.edit_message_text(
-                f"📥 *جاري تحميل الفيديو...*\n\n"
-                f"📝 *العنوان:* {title[:50]}...\n"
-                f"⏱️ *المدة:* {duration//60}:{duration%60:02d}\n"
-                f"👤 *المنشئ:* {uploader}",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            # التحقق من حجم الفيديو المتوقع
+            filesize = info.get('filesize') or info.get('filesize_approx', 0)
+            if filesize and filesize > MAX_FILE_SIZE:
+                await query.edit_message_text(
+                    f"❌ *خطأ:* حجم الملف كبير جداً ({filesize / (1024*1024):.1f} MB)\n"
+                    f"الحد الأقصى المسموح: {MAX_FILE_SIZE / (1024*1024):.0f} MB",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+            
+            # عرض معلومات الفيديو
+            info_text = f"📹 *{title}*\n"
+            if duration:
+                info_text += f"⏱️ المدة: {duration//60}:{duration%60:02d}\n"
+            if uploader:
+                info_text += f"👤 القناة: {uploader}\n"
+            info_text += f"📥 *جاري التحميل...*"
+            
+            await query.edit_message_text(info_text, parse_mode=ParseMode.MARKDOWN)
             
             # تحميل الفيديو
             ydl.download([url])
             
-            # البحث عن الملف المحمل
+            # العثور على الملف المحمل
+            downloaded_file = None
             for file in os.listdir(DOWNLOAD_PATH):
                 if file.endswith(('.mp4', '.mkv', '.webm', '.avi')):
-                    file_path = os.path.join(DOWNLOAD_PATH, file)
-                    
-                    # التحقق من حجم الملف
-                    file_size = os.path.getsize(file_path)
-                    if file_size > 50 * 1024 * 1024:  # 50 MB
-                        await query.edit_message_text(
-                            "❌ *الملف كبير جداً*\n\n"
-                            f"📊 *الحجم:* {file_size/1024/1024:.1f} MB\n"
-                            "⚠️ *الحد الأقصى:* 50 MB\n\n"
-                            "💡 جرب تحميل الصوت فقط",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                        os.remove(file_path)
-                        return
-                    
-                    # رفع الفيديو
-                    await query.edit_message_text("📤 *جاري رفع الفيديو...*", parse_mode=ParseMode.MARKDOWN)
-                    
-                    with open(file_path, 'rb') as video_file:
-                        await query.message.reply_video(
-                            video=video_file,
-                            caption=f"🎬 *{title}*\n\n⏱️ المدة: {duration//60}:{duration%60:02d}\n👤 المنشئ: {uploader}",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                    
-                    # حذف الملف
-                    os.remove(file_path)
-                    
+                    downloaded_file = os.path.join(DOWNLOAD_PATH, file)
+                    break
+            
+            if downloaded_file and os.path.exists(downloaded_file):
+                file_size = os.path.getsize(downloaded_file)
+                
+                if file_size > MAX_FILE_SIZE:
+                    os.remove(downloaded_file)
                     await query.edit_message_text(
-                        "✅ *تم تحميل الفيديو بنجاح!*\n\n"
-                        "🎉 استمتع بالمشاهدة!",
+                        f"❌ *خطأ:* حجم الملف كبير جداً ({file_size / (1024*1024):.1f} MB)\n"
+                        f"الحد الأقصى المسموح: {MAX_FILE_SIZE / (1024*1024):.0f} MB",
                         parse_mode=ParseMode.MARKDOWN
                     )
                     return
-            
-            await query.edit_message_text("❌ لم يتم العثور على ملف الفيديو")
-            
-    except Exception as e:
+                
+                await query.edit_message_text("📤 *جاري رفع الفيديو...*", parse_mode=ParseMode.MARKDOWN)
+                
+                # إرسال الفيديو
+                with open(downloaded_file, 'rb') as video:
+                    await query.message.reply_video(
+                        video=video,
+                        caption=f"🎬 {title}",
+                        supports_streaming=True
+                    )
+                
+                # حذف الملف المؤقت
+                os.remove(downloaded_file)
+                await query.edit_message_text("✅ *تم تحميل الفيديو بنجاح!*", parse_mode=ParseMode.MARKDOWN)
+                
+                # تحديث الإحصائيات
+                if STATS_ENABLED:
+                    update_stats('video_downloads')
+            else:
+                await query.edit_message_text("❌ *خطأ في تحميل الفيديو*", parse_mode=ParseMode.MARKDOWN)
+                
+    except yt_dlp.DownloadError as e:
+        error_msg = str(e)
+        if "Sign in to confirm you're not a bot" in error_msg:
+            await query.edit_message_text(
+                "❌ *خطأ مؤقت من YouTube*\n\n"
+                "🔄 يرجى المحاولة مرة أخرى بعد قليل\n"
+                "أو جرب رابط فيديو آخر\n\n"
+                "💡 *نصيحة:* هذا خطأ مؤقت من YouTube وليس من البوت",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await query.edit_message_text(f"❌ *خطأ في التحميل:* {error_msg}", parse_mode=ParseMode.MARKDOWN)
         logger.error(f"خطأ في تحميل الفيديو: {e}")
-        await query.edit_message_text(
-            f"❌ *خطأ في تحميل الفيديو*\n\n"
-            f"🔍 *السبب:* {str(e)[:100]}...\n\n"
-            "💡 جرب رابطاً آخر أو تحميل الصوت فقط",
-            parse_mode=ParseMode.MARKDOWN
-        )
+    except Exception as e:
+        await query.edit_message_text(f"❌ *خطأ غير متوقع:* {str(e)}", parse_mode=ParseMode.MARKDOWN)
+        logger.error(f"خطأ غير متوقع في تحميل الفيديو: {e}")
 
 async def download_audio(query, url: str):
     """تحميل الصوت"""
     try:
         await query.edit_message_text("🎵 *بدء استخراج الصوت...*", parse_mode=ParseMode.MARKDOWN)
         
-        # إعداد yt-dlp للصوت
+        # إعدادات yt-dlp المحدثة لتجنب مشاكل YouTube
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(DOWNLOAD_PATH, '%(title)s.%(ext)s'),
             'noplaylist': True,
             'extract_flat': False,
+            'writethumbnail': False,
+            'writeinfojson': False,
+            'ignoreerrors': True,
+            'no_warnings': False,
+            'quiet': False,
+            # إعدادات خاصة بـ YouTube لتجنب bot detection
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_skip': ['configs', 'webpage'],
+                    'player_client': ['android', 'web']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip,deflate',
+                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+                'Keep-Alive': '300',
+                'Connection': 'keep-alive',
+            },
+            'extractor_retries': 3,
+            'fragment_retries': 3,
+            'retry_sleep_functions': {
+                'http': lambda n: min(4 ** n, 60),
+                'fragment': lambda n: min(4 ** n, 60),
+                'extractor': lambda n: min(4 ** n, 60)
+            },
+            # إعدادات إضافية لتجنب القيود
+            'sleep_interval': 1,
+            'max_sleep_interval': 5,
+            'sleep_interval_subtitles': 0,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
-            }],
+            }]
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # استخراج معلومات الفيديو
+            # الحصول على معلومات الفيديو أولاً
             info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'صوت')
+            title = info.get('title', 'Unknown')
             duration = info.get('duration', 0)
-            uploader = info.get('uploader', 'غير محدد')
+            uploader = info.get('uploader', 'Unknown')
             
-            # تحديث الرسالة
-            await query.edit_message_text(
-                f"🎵 *جاري استخراج الصوت...*\n\n"
-                f"📝 *العنوان:* {title[:50]}...\n"
-                f"⏱️ *المدة:* {duration//60}:{duration%60:02d}\n"
-                f"👤 *المنشئ:* {uploader}",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            # عرض معلومات الصوت
+            info_text = f"🎵 *{title}*\n"
+            if duration:
+                info_text += f"⏱️ المدة: {duration//60}:{duration%60:02d}\n"
+            if uploader:
+                info_text += f"👤 القناة: {uploader}\n"
+            info_text += f"🎧 *جاري استخراج الصوت...*"
+            
+            await query.edit_message_text(info_text, parse_mode=ParseMode.MARKDOWN)
             
             # تحميل واستخراج الصوت
             ydl.download([url])
             
-            # البحث عن الملف الصوتي
+            # العثور على الملف المحمل
+            downloaded_file = None
             for file in os.listdir(DOWNLOAD_PATH):
-                if file.endswith('.mp3'):
-                    file_path = os.path.join(DOWNLOAD_PATH, file)
-                    
-                    # التحقق من حجم الملف
-                    file_size = os.path.getsize(file_path)
-                    if file_size > 50 * 1024 * 1024:  # 50 MB
-                        await query.edit_message_text(
-                            "❌ *الملف الصوتي كبير جداً*\n\n"
-                            f"📊 *الحجم:* {file_size/1024/1024:.1f} MB\n"
-                            "⚠️ *الحد الأقصى:* 50 MB",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                        os.remove(file_path)
-                        return
-                    
-                    # رفع الملف الصوتي
-                    await query.edit_message_text("📤 *جاري رفع الملف الصوتي...*", parse_mode=ParseMode.MARKDOWN)
-                    
-                    with open(file_path, 'rb') as audio_file:
-                        await query.message.reply_audio(
-                            audio=audio_file,
-                            caption=f"🎵 *{title}*\n\n⏱️ المدة: {duration//60}:{duration%60:02d}\n👤 المنشئ: {uploader}",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                    
-                    # حذف الملف
-                    os.remove(file_path)
-                    
+                if file.endswith(('.mp3', '.m4a', '.opus', '.wav')):
+                    downloaded_file = os.path.join(DOWNLOAD_PATH, file)
+                    break
+            
+            if downloaded_file and os.path.exists(downloaded_file):
+                file_size = os.path.getsize(downloaded_file)
+                
+                if file_size > MAX_FILE_SIZE:
+                    os.remove(downloaded_file)
                     await query.edit_message_text(
-                        "✅ *تم استخراج الصوت بنجاح!*\n\n"
-                        "🎧 استمتع بالاستماع!",
+                        f"❌ *خطأ:* حجم الملف كبير جداً ({file_size / (1024*1024):.1f} MB)\n"
+                        f"الحد الأقصى المسموح: {MAX_FILE_SIZE / (1024*1024):.0f} MB",
                         parse_mode=ParseMode.MARKDOWN
                     )
                     return
-            
-            await query.edit_message_text("❌ لم يتم العثور على الملف الصوتي")
-            
+                
+                await query.edit_message_text("📤 *جاري رفع الملف الصوتي...*", parse_mode=ParseMode.MARKDOWN)
+                
+                # إرسال الملف الصوتي
+                with open(downloaded_file, 'rb') as audio:
+                    await query.message.reply_audio(
+                        audio=audio,
+                        caption=f"🎵 {title}",
+                        title=title,
+                        performer=uploader if uploader != 'Unknown' else None
+                    )
+                
+                # حذف الملف المؤقت
+                os.remove(downloaded_file)
+                await query.edit_message_text("✅ *تم استخراج الصوت بنجاح!*", parse_mode=ParseMode.MARKDOWN)
+                
+                # تحديث الإحصائيات
+                if STATS_ENABLED:
+                    update_stats('audio_downloads')
+            else:
+                await query.edit_message_text("❌ *خطأ في استخراج الصوت*", parse_mode=ParseMode.MARKDOWN)
+                
+    except yt_dlp.DownloadError as e:
+        error_msg = str(e)
+        if "Sign in to confirm you're not a bot" in error_msg:
+            await query.edit_message_text(
+                "❌ *خطأ مؤقت من YouTube*\n\n"
+                "🔄 يرجى المحاولة مرة أخرى بعد قليل\n"
+                "أو جرب رابط فيديو آخر\n\n"
+                "💡 *نصيحة:* هذا خطأ مؤقت من YouTube وليس من البوت",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await query.edit_message_text(f"❌ *خطأ في التحميل:* {error_msg}", parse_mode=ParseMode.MARKDOWN)
+        logger.error(f"خطأ في تحميل الصوت: {e}")
     except Exception as e:
-        logger.error(f"خطأ في استخراج الصوت: {e}")
-        await query.edit_message_text(
-            f"❌ *خطأ في استخراج الصوت*\n\n"
-            f"🔍 *السبب:* {str(e)[:100]}...\n\n"
-            "💡 جرب رابطاً آخر",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        await query.edit_message_text(f"❌ *خطأ غير متوقع:* {str(e)}", parse_mode=ParseMode.MARKDOWN)
+        logger.error(f"خطأ غير متوقع في تحميل الصوت: {e}")
 
 async def handle_other_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالج الرسائل الأخرى"""
