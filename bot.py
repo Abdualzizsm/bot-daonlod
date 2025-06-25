@@ -11,13 +11,13 @@ import shutil
 import json
 import threading
 import time
+import random
+import fcntl  # لحماية الملفات
+import atexit
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional, Dict, Any
 from datetime import datetime
-import atexit
-import random
-
 import yt_dlp
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo, InputMediaAudio
@@ -1008,8 +1008,144 @@ async def get_video_info(query, url):
         logger.error(f"خطأ في الحصول على معلومات الفيديو: {e}")
         await query.edit_message_text("❌ *خطأ في الحصول على معلومات الفيديو*", parse_mode=ParseMode.MARKDOWN)
 
-def main():
-    """تشغيل البوت مع نظام الإحصائيات"""
+async def run_bot():
+    """تشغيل بوت تلقرام"""
+    try:
+        print("🤖 بدء تشغيل بوت التحميل...")
+        
+        # إنشاء التطبيق مع إعدادات محسنة
+        application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+        
+        # إضافة المعالجات
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("stats", stats_command))
+        application.add_handler(CallbackQueryHandler(button_callback))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_other_messages))
+        
+        # إضافة معالج الأخطاء
+        application.add_error_handler(error_handler)
+        
+        # محاولة إيقاف أي webhook موجود
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            print("✅ تم حذف webhook إن وجد")
+            await asyncio.sleep(2)  # انتظار قصير
+        except Exception as e:
+            print(f"⚠️ تحذير webhook: {e}")
+        
+        # تشغيل البوت مع إعادة المحاولة
+        max_retries = 5
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                print(f"🔄 محاولة تشغيل البوت ({retry_count + 1}/{max_retries})...")
+                
+                # تشغيل البوت مع polling
+                await application.initialize()
+                await application.start()
+                await application.updater.start_polling(
+                    poll_interval=1.0,
+                    timeout=10,
+                    bootstrap_retries=3,
+                    read_timeout=10,
+                    write_timeout=10,
+                    connect_timeout=10,
+                    pool_timeout=10,
+                    drop_pending_updates=True
+                )
+                
+                print("✅ تم تشغيل البوت بنجاح!")
+                print(f"📊 لوحة التحكم: http://localhost:5002")
+                
+                # الحفاظ على البوت يعمل
+                await application.updater.idle()
+                
+            except Conflict as e:
+                print(f"⚠️ تضارب في البوت (محاولة {retry_count + 1}): {e}")
+                retry_count += 1
+                
+                if retry_count < max_retries:
+                    wait_time = min(30, 5 * retry_count)  # انتظار متزايد
+                    print(f"⏳ انتظار {wait_time} ثانية قبل المحاولة التالية...")
+                    await asyncio.sleep(wait_time)
+                    
+                    # محاولة إيقاف التطبيق الحالي
+                    try:
+                        await application.stop()
+                        await application.shutdown()
+                    except:
+                        pass
+                else:
+                    print("❌ فشل في حل تضارب البوت بعد عدة محاولات")
+                    break
+                    
+            except Exception as e:
+                print(f"❌ خطأ في تشغيل البوت (محاولة {retry_count + 1}): {e}")
+                retry_count += 1
+                
+                if retry_count < max_retries:
+                    wait_time = min(15, 3 * retry_count)
+                    print(f"⏳ انتظار {wait_time} ثانية قبل المحاولة التالية...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"❌ فشل في تشغيل البوت بعد عدة محاولات: {e}")
+                    break
+                    
+    except Exception as e:
+        print(f"❌ خطأ عام في تشغيل البوت: {e}")
+    finally:
+        # تنظيف الموارد
+        try:
+            await application.stop()
+            await application.shutdown()
+        except:
+            pass
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """معالج الأخطاء العام"""
+    logger.error(f"Exception while handling an update: {context.error}")
+    
+    # التعامل مع Telegram Conflict
+    if isinstance(context.error, Conflict):
+        logger.warning("Telegram Conflict detected - another bot instance might be running")
+        return
+    
+    # إرسال رسالة خطأ للمستخدم
+    if update and hasattr(update, 'effective_chat') and update.effective_chat:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ حدث خطأ مؤقت. يرجى المحاولة مرة أخرى.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error(f"Failed to send error message: {e}")
+
+BOT_LOCK_FILE = "/tmp/telegram_bot.lock"
+bot_lock_fd = None
+
+def acquire_lock():
+    global bot_lock_fd
+    try:
+        bot_lock_fd = os.open(BOT_LOCK_FILE, os.O_RDWR | os.O_CREAT)
+        fcntl.flock(bot_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print("✅ تم الحصول على قفل البوت")
+    except BlockingIOError:
+        print("❌ قفل البوت مأخوذ من قبل")
+        exit(1)
+
+def release_lock():
+    global bot_lock_fd
+    if bot_lock_fd:
+        fcntl.flock(bot_lock_fd, fcntl.LOCK_UN)
+        os.close(bot_lock_fd)
+        bot_lock_fd = None
+        print("✅ تم إطلاق قفل البوت")
+
+if __name__ == '__main__':
     # تحميل الإحصائيات
     load_stats()
     
@@ -1020,49 +1156,19 @@ def main():
         dashboard_thread.start()
         print(f"✅ تم تشغيل لوحة التحكم على: http://localhost:{port}")
     
-    # إنشاء التطبيق
-    application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+    # الحصول على قفل البوت
+    acquire_lock()
     
-    # إضافة المعالجات
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_other_messages))
+    # تسجيل دالة إطلاق القفل عند الخروج
+    atexit.register(release_lock)
     
-    # تشغيل البوت مع إعادة المحاولة
-    max_retries = 3
-    retry_count = 0
-    
-    while retry_count < max_retries:
-        try:
-            print("🚀 بدء تشغيل البوت...")
-            print("📊 نظام الإحصائيات: مفعل" if STATS_ENABLED else "📊 نظام الإحصائيات: غير مفعل")
-            port = int(os.environ.get('PORT', 5002))
-            print(f"🌐 لوحة التحكم: متاحة على http://localhost:{port}" if FLASK_AVAILABLE else "🌐 لوحة التحكم: غير متاحة")
-            print("✅ البوت يعمل الآن! اضغط Ctrl+C للإيقاف")
-            
-            application.run_polling(drop_pending_updates=True)
-            break
-            
-        except Conflict:
-            retry_count += 1
-            if retry_count < max_retries:
-                print(f"⚠️ تعارض في البوت، محاولة إعادة التشغيل ({retry_count}/{max_retries})...")
-                time.sleep(5)
-            else:
-                print("❌ فشل في حل تعارض البوت بعد عدة محاولات")
-                break
-        except KeyboardInterrupt:
-            print("\n🛑 تم إيقاف البوت بواسطة المستخدم")
-            break
-        except Exception as e:
-            retry_count += 1
-            if retry_count < max_retries:
-                print(f"⚠️ خطأ في البوت، محاولة إعادة التشغيل ({retry_count}/{max_retries}): {e}")
-                time.sleep(5)
-            else:
-                print(f"❌ فشل في تشغيل البوت بعد عدة محاولات: {e}")
-                break
-
-if __name__ == '__main__':
-    main()
+    try:
+        # تشغيل البوت
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        print("\n🛑 تم إيقاف البوت بواسطة المستخدم")
+    except Exception as e:
+        print(f"❌ خطأ عام: {e}")
+    finally:
+        # إطلاق قفل البوت
+        release_lock()
