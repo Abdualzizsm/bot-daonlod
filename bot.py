@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from typing import Optional, Dict, Any
 from datetime import datetime
 import atexit
+import random
 
 import yt_dlp
 import requests
@@ -369,52 +370,94 @@ YouTube, TikTok, Instagram, Facebook, Twitter, SoundCloud, Vimeo
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالج الروابط"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "مجهول"
     url = update.message.text.strip()
-    user = update.effective_user
     
-    logger.info(f"تم استلام رابط من المستخدم {user.id}: {url}")
-    
-    if not is_supported_url(url):
+    # فحص معدل الطلبات
+    if not check_rate_limit(user_id):
+        remaining_time = RATE_LIMIT_WINDOW - (time.time() - min(user_request_tracker[user_id]))
         await update.message.reply_text(
-            "❌ *عذراً، هذا الرابط غير مدعوم*\n\n"
-            "🌐 *المنصات المدعومة:*\n"
-            "• YouTube\n• TikTok\n• Instagram\n• Facebook\n• Twitter/X\n• SoundCloud\n• Vimeo\n\n"
-            "📝 تأكد من صحة الرابط وأنه من إحدى المنصات المدعومة",
+            f"⏰ *تم تجاوز الحد المسموح من الطلبات*\n\n"
+            f"🔄 يمكنك إرسال طلب جديد بعد: {remaining_time/60:.1f} دقيقة\n"
+            f"📊 الحد المسموح: {RATE_LIMIT_REQUESTS} طلبات كل {RATE_LIMIT_WINDOW/60:.0f} دقائق\n\n"
+            f"💡 *نصيحة:* هذا النظام يحمي البوت من التحميل الزائد",
             parse_mode=ParseMode.MARKDOWN
         )
         return
     
-    # إنشاء معرف قصير للرابط
-    url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
-    TEMP_URLS[url_hash] = url
+    logger.info(f"طلب تحميل من المستخدم {username} ({user_id}): {url}")
     
-    logger.info(f"تم حفظ الرابط بالمعرف: {url_hash}")
+    # التحقق من صحة الرابط
+    if not is_supported_url(url):
+        await update.message.reply_text(
+            "❌ *رابط غير صالح*\n\n"
+            "📝 *الروابط المدعومة:*\n"
+            "• YouTube\n"
+            "• Instagram\n"
+            "• TikTok\n"
+            "• Twitter/X\n"
+            "• Facebook\n"
+            "• وغيرها...\n\n"
+            "💡 تأكد من نسخ الرابط كاملاً",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
     
-    platform_name = get_platform_name(url)
+    # إنشاء hash فريد للرابط
+    url_hash = hash(url + str(user_id))
+    TEMP_URLS[url_hash] = {
+        'url': url,
+        'user_id': user_id,
+        'timestamp': time.time()
+    }
     
-    # إنشاء أزرار التحميل
+    # إنشاء لوحة الخيارات
     keyboard = [
         [
-            InlineKeyboardButton("🎬 فيديو بأعلى جودة", callback_data=f"video_{url_hash}"),
+            InlineKeyboardButton("🎬 فيديو عالي الجودة", callback_data=f"video_best_{url_hash}"),
             InlineKeyboardButton("🎵 صوت فقط", callback_data=f"audio_{url_hash}")
+        ],
+        [
+            InlineKeyboardButton("📱 فيديو متوسط الجودة", callback_data=f"video_medium_{url_hash}"),
+            InlineKeyboardButton("📺 فيديو منخفض الجودة", callback_data=f"video_low_{url_hash}")
+        ],
+        [
+            InlineKeyboardButton("ℹ️ معلومات الفيديو", callback_data=f"info_{url_hash}")
         ]
     ]
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    message_text = f"""
-✅ *تم اكتشاف الرابط بنجاح!*
-
-🌐 *المنصة:* {platform_name}
-🔗 *الرابط:* `{url[:50]}...`
-
-📥 *اختر نوع التحميل:*
-"""
-    
-    await update.message.reply_text(
-        message_text,
-        reply_markup=reply_markup,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    # إرسال رسالة الخيارات مع معاينة الرابط
+    try:
+        # محاولة الحصول على معلومات أساسية للمعاينة
+        preview_text = f"🔗 *تم استلام الرابط*\n\n"
+        preview_text += f"📋 اختر نوع التحميل المطلوب:\n\n"
+        preview_text += f"🎯 *نصائح للاستخدام الأمثل:*\n"
+        preview_text += f"• الفيديو عالي الجودة قد يكون كبير الحجم\n"
+        preview_text += f"• الصوت فقط أسرع في التحميل\n"
+        preview_text += f"• الجودة المتوسطة متوازنة\n\n"
+        preview_text += f"⚡ *معدل الطلبات:* {len(user_request_tracker.get(user_id, []))}/{RATE_LIMIT_REQUESTS}"
+        
+        await update.message.reply_text(
+            preview_text,
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # تحديث الإحصائيات
+        if STATS_ENABLED:
+            update_stats('total_users', user_id)
+            
+    except Exception as e:
+        logger.error(f"خطأ في معالجة الرابط: {e}")
+        await update.message.reply_text(
+            "❌ *خطأ في معالجة الرابط*\n\n"
+            "🔄 يرجى المحاولة مرة أخرى\n"
+            "أو التأكد من صحة الرابط",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالج الضغط على الأزرار"""
@@ -442,138 +485,311 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    url = TEMP_URLS[url_hash]
+    url = TEMP_URLS[url_hash]['url']
     logger.info(f"تم العثور على الرابط: {url}")
     
     # تحديث إحصائيات التحميل
     add_download(download_type)
     
     # بدء التحميل
-    if download_type == "video":
+    if download_type == "video_best":
         await download_video(query, url, "best[ext=mp4]/best")
+    elif download_type == "video_medium":
+        await download_video(query, url, "best[ext=mp4][height<=480]/best")
+    elif download_type == "video_low":
+        await download_video(query, url, "best[ext=mp4][height<=240]/best")
     elif download_type == "audio":
         await download_audio(query, url)
+    elif download_type == "info":
+        await get_video_info(query, url)
     
     # حذف الرابط من الذاكرة المؤقتة
     del TEMP_URLS[url_hash]
 
 MAX_FILE_SIZE = 50 * 1024 * 1024
 
+# قائمة User-Agents متنوعة لتجنب الحظر
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+]
+
+# قائمة Accept-Language متنوعة
+ACCEPT_LANGUAGES = [
+    'en-US,en;q=0.9',
+    'en-GB,en;q=0.9',
+    'en-US,en;q=0.8,ar;q=0.7',
+    'en-GB,en;q=0.8,fr;q=0.7',
+    'en-US,en;q=0.9,es;q=0.8',
+    'en,en-US;q=0.9',
+    'en-US,en;q=0.5',
+]
+
+# نظام تتبع معدل الطلبات لكل مستخدم
+user_request_tracker = {}
+RATE_LIMIT_REQUESTS = 5  # عدد الطلبات المسموحة
+RATE_LIMIT_WINDOW = 300  # خلال 5 دقائق (بالثواني)
+
+def get_random_headers():
+    """إنشاء headers عشوائية لتجنب الحظر"""
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36'
+    ]
+    
+    return {
+        'User-Agent': random.choice(user_agents),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': random.choice(['en-US,en;q=0.5', 'ar,en;q=0.9', 'en-GB,en;q=0.8']),
+        'Accept-Encoding': 'gzip, deflate',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Cache-Control': 'max-age=0'
+    }
+
+def is_supported_url(url):
+    """فحص إذا كان الرابط مدعوماً"""
+    supported_domains = [
+        'youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com',
+        'facebook.com', 'twitter.com', 'x.com', 'soundcloud.com',
+        'vimeo.com', 'dailymotion.com', 'twitch.tv'
+    ]
+    
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.lower()
+        return any(supported in domain for supported in supported_domains)
+    except:
+        return False
+
+def get_platform_name(url):
+    """الحصول على اسم المنصة من الرابط"""
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.lower()
+        
+        if 'youtube' in domain or 'youtu.be' in domain:
+            return "YouTube"
+        elif 'tiktok' in domain:
+            return "TikTok"
+        elif 'instagram' in domain:
+            return "Instagram"
+        elif 'facebook' in domain:
+            return "Facebook"
+        elif 'twitter' in domain or 'x.com' in domain:
+            return "Twitter/X"
+        elif 'soundcloud' in domain:
+            return "SoundCloud"
+        elif 'vimeo' in domain:
+            return "Vimeo"
+        else:
+            return "منصة مدعومة"
+    except:
+        return "غير معروف"
+
+def get_advanced_ydl_opts(format_selector: str, output_path: str, is_audio: bool = False) -> Dict[str, Any]:
+    """إنشاء إعدادات yt-dlp متقدمة ومحسنة"""
+    
+    # قائمة User-Agent متنوعة لتجنب bot detection
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36'
+    ]
+    
+    # اختيار User-Agent عشوائي
+    selected_user_agent = random.choice(user_agents)
+    
+    # إعدادات أساسية محسنة
+    base_opts = {
+        'format': format_selector,
+        'outtmpl': output_path,
+        'user_agent': selected_user_agent,
+        'referer': 'https://www.youtube.com/',
+        'http_headers': {
+            'User-Agent': selected_user_agent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': random.choice(['en-US,en;q=0.5', 'ar,en;q=0.9', 'en-GB,en;q=0.8']),
+            'Accept-Encoding': 'gzip, deflate',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        },
+        
+        # إعدادات الشبكة المحسنة
+        'socket_timeout': 30,
+        'retries': 3,
+        'fragment_retries': 3,
+        'retry_sleep_functions': {
+            'http': lambda n: min(4 * (2 ** n), 60) + random.uniform(0, 5),
+            'fragment': lambda n: min(2 * (2 ** n), 30) + random.uniform(0, 3),
+        },
+        
+        # إعدادات التحميل
+        'http_chunk_size': 1024 * 1024,  # 1MB chunks
+        'buffersize': 1024 * 16,  # 16KB buffer
+        'concurrent_fragment_downloads': 4,
+        
+        # تحسينات الأداء
+        'no_color': True,
+        'no_warnings': True,
+        'quiet': True,
+        'extract_flat': False,
+        'writethumbnail': False,
+        'writeinfojson': False,
+        'writesubtitles': False,
+        'writeautomaticsub': False,
+        'writedescription': False,
+        'writeannotations': False,
+        'writecomments': False,
+        
+        # إعدادات خاصة بـ YouTube لتجنب bot detection
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+                'player_skip': ['webpage', 'configs'],
+                'innertube_host': 'youtubei.googleapis.com',
+                'innertube_key': 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+                'skip': ['hls', 'dash'],
+            }
+        },
+    }
+    
+    # إعدادات خاصة بالصوت
+    if is_audio:
+        base_opts.update({
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'prefer_ffmpeg': True,
+        })
+    
+    return base_opts
+
+async def download_with_retry(url: str, ydl_opts: Dict[str, Any], max_attempts: int = 3) -> bool:
+    """تحميل مع إعادة المحاولة والتعامل مع الأخطاء"""
+    for attempt in range(max_attempts):
+        try:
+            # تغيير User-Agent في كل محاولة
+            if attempt > 0:
+                user_agents = [
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+                ]
+                new_user_agent = random.choice(user_agents)
+                ydl_opts['user_agent'] = new_user_agent
+                ydl_opts['http_headers']['User-Agent'] = new_user_agent
+                
+                # انتظار عشوائي بين المحاولات
+                wait_time = random.uniform(2, 8) * (attempt + 1)
+                await asyncio.sleep(wait_time)
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+                return True
+                
+        except yt_dlp.DownloadError as e:
+            error_msg = str(e).lower()
+            
+            # أخطاء مؤقتة قابلة للإعادة
+            if any(keyword in error_msg for keyword in [
+                'sign in to confirm', 'bot', 'captcha', 'rate limit',
+                'too many requests', 'temporary', 'try again'
+            ]):
+                logger.warning(f"خطأ مؤقت في المحاولة {attempt + 1}: {e}")
+                if attempt < max_attempts - 1:
+                    continue
+            
+            # أخطاء دائمة
+            logger.error(f"خطأ في التحميل: {e}")
+            raise e
+            
+        except Exception as e:
+            logger.error(f"خطأ غير متوقع في المحاولة {attempt + 1}: {e}")
+            if attempt < max_attempts - 1:
+                continue
+            raise e
+    
+    return False
+
 async def download_video(query, url, format_selector):
     """تحميل الفيديو"""
     try:
         await query.edit_message_text("🎬 *بدء تحميل الفيديو...*", parse_mode=ParseMode.MARKDOWN)
         
-        # إعدادات yt-dlp المحدثة لتجنب مشاكل YouTube
-        ydl_opts = {
-            'format': format_selector,
-            'outtmpl': os.path.join(DOWNLOAD_PATH, '%(title)s.%(ext)s'),
-            'noplaylist': True,
-            'extract_flat': False,
-            'writethumbnail': False,
-            'writeinfojson': False,
-            'ignoreerrors': True,
-            'no_warnings': False,
-            'quiet': False,
-            # إعدادات خاصة بـ YouTube لتجنب bot detection
-            'extractor_args': {
-                'youtube': {
-                    'skip': ['dash', 'hls'],
-                    'player_skip': ['configs', 'webpage'],
-                    'player_client': ['android', 'web']
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Accept-Encoding': 'gzip,deflate',
-                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
-                'Keep-Alive': '300',
-                'Connection': 'keep-alive',
-            },
-            'extractor_retries': 3,
-            'fragment_retries': 3,
-            'retry_sleep_functions': {
-                'http': lambda n: min(4 ** n, 60),
-                'fragment': lambda n: min(4 ** n, 60),
-                'extractor': lambda n: min(4 ** n, 60)
-            },
-            # إعدادات إضافية لتجنب القيود
-            'sleep_interval': 1,
-            'max_sleep_interval': 5,
-            'sleep_interval_subtitles': 0
-        }
+        ydl_opts = get_advanced_ydl_opts(format_selector, DOWNLOAD_PATH)
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # الحصول على معلومات الفيديو أولاً
-            info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'Unknown')
-            duration = info.get('duration', 0)
-            uploader = info.get('uploader', 'Unknown')
+        # تحميل الفيديو
+        success = await download_with_retry(url, ydl_opts)
+        
+        if not success:
+            await query.edit_message_text("❌ *خطأ في تحميل الفيديو*", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        # العثور على الملف المحمل
+        downloaded_file = None
+        for file in os.listdir(DOWNLOAD_PATH):
+            if file.endswith(('.mp4', '.mkv', '.webm', '.avi')):
+                downloaded_file = os.path.join(DOWNLOAD_PATH, file)
+                break
+        
+        if downloaded_file and os.path.exists(downloaded_file):
+            file_size = os.path.getsize(downloaded_file)
             
-            # التحقق من حجم الفيديو المتوقع
-            filesize = info.get('filesize') or info.get('filesize_approx', 0)
-            if filesize and filesize > MAX_FILE_SIZE:
+            if file_size > MAX_FILE_SIZE:
+                os.remove(downloaded_file)
                 await query.edit_message_text(
-                    f"❌ *خطأ:* حجم الملف كبير جداً ({filesize / (1024*1024):.1f} MB)\n"
+                    f"❌ *خطأ:* حجم الملف كبير جداً ({file_size / (1024*1024):.1f} MB)\n"
                     f"الحد الأقصى المسموح: {MAX_FILE_SIZE / (1024*1024):.0f} MB",
                     parse_mode=ParseMode.MARKDOWN
                 )
                 return
             
-            # عرض معلومات الفيديو
-            info_text = f"📹 *{title}*\n"
-            if duration:
-                info_text += f"⏱️ المدة: {duration//60}:{duration%60:02d}\n"
-            if uploader:
-                info_text += f"👤 القناة: {uploader}\n"
-            info_text += f"📥 *جاري التحميل...*"
+            await query.edit_message_text("📤 *جاري رفع الفيديو...*", parse_mode=ParseMode.MARKDOWN)
             
-            await query.edit_message_text(info_text, parse_mode=ParseMode.MARKDOWN)
+            # إرسال الفيديو
+            with open(downloaded_file, 'rb') as video:
+                await query.message.reply_video(
+                    video=video,
+                    caption=f"🎬 {os.path.basename(downloaded_file)}",
+                    supports_streaming=True
+                )
             
-            # تحميل الفيديو
-            ydl.download([url])
+            # حذف الملف المؤقت
+            os.remove(downloaded_file)
+            await query.edit_message_text("✅ *تم تحميل الفيديو بنجاح!*", parse_mode=ParseMode.MARKDOWN)
             
-            # العثور على الملف المحمل
-            downloaded_file = None
-            for file in os.listdir(DOWNLOAD_PATH):
-                if file.endswith(('.mp4', '.mkv', '.webm', '.avi')):
-                    downloaded_file = os.path.join(DOWNLOAD_PATH, file)
-                    break
+            # تحديث الإحصائيات
+            if STATS_ENABLED:
+                update_stats('video_downloads')
+        else:
+            await query.edit_message_text("❌ *خطأ في تحميل الفيديو*", parse_mode=ParseMode.MARKDOWN)
             
-            if downloaded_file and os.path.exists(downloaded_file):
-                file_size = os.path.getsize(downloaded_file)
-                
-                if file_size > MAX_FILE_SIZE:
-                    os.remove(downloaded_file)
-                    await query.edit_message_text(
-                        f"❌ *خطأ:* حجم الملف كبير جداً ({file_size / (1024*1024):.1f} MB)\n"
-                        f"الحد الأقصى المسموح: {MAX_FILE_SIZE / (1024*1024):.0f} MB",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                    return
-                
-                await query.edit_message_text("📤 *جاري رفع الفيديو...*", parse_mode=ParseMode.MARKDOWN)
-                
-                # إرسال الفيديو
-                with open(downloaded_file, 'rb') as video:
-                    await query.message.reply_video(
-                        video=video,
-                        caption=f"🎬 {title}",
-                        supports_streaming=True
-                    )
-                
-                # حذف الملف المؤقت
-                os.remove(downloaded_file)
-                await query.edit_message_text("✅ *تم تحميل الفيديو بنجاح!*", parse_mode=ParseMode.MARKDOWN)
-                
-                # تحديث الإحصائيات
-                if STATS_ENABLED:
-                    update_stats('video_downloads')
-            else:
-                await query.edit_message_text("❌ *خطأ في تحميل الفيديو*", parse_mode=ParseMode.MARKDOWN)
-                
     except yt_dlp.DownloadError as e:
         error_msg = str(e)
         if "Sign in to confirm you're not a bot" in error_msg:
@@ -596,112 +812,55 @@ async def download_audio(query, url: str):
     try:
         await query.edit_message_text("🎵 *بدء استخراج الصوت...*", parse_mode=ParseMode.MARKDOWN)
         
-        # إعدادات yt-dlp المحدثة لتجنب مشاكل YouTube
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(DOWNLOAD_PATH, '%(title)s.%(ext)s'),
-            'noplaylist': True,
-            'extract_flat': False,
-            'writethumbnail': False,
-            'writeinfojson': False,
-            'ignoreerrors': True,
-            'no_warnings': False,
-            'quiet': False,
-            # إعدادات خاصة بـ YouTube لتجنب bot detection
-            'extractor_args': {
-                'youtube': {
-                    'skip': ['dash', 'hls'],
-                    'player_skip': ['configs', 'webpage'],
-                    'player_client': ['android', 'web']
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Accept-Encoding': 'gzip,deflate',
-                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
-                'Keep-Alive': '300',
-                'Connection': 'keep-alive',
-            },
-            'extractor_retries': 3,
-            'fragment_retries': 3,
-            'retry_sleep_functions': {
-                'http': lambda n: min(4 ** n, 60),
-                'fragment': lambda n: min(4 ** n, 60),
-                'extractor': lambda n: min(4 ** n, 60)
-            },
-            # إعدادات إضافية لتجنب القيود
-            'sleep_interval': 1,
-            'max_sleep_interval': 5,
-            'sleep_interval_subtitles': 0,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        }
+        ydl_opts = get_advanced_ydl_opts("bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio", DOWNLOAD_PATH, is_audio=True)
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # الحصول على معلومات الفيديو أولاً
-            info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'Unknown')
-            duration = info.get('duration', 0)
-            uploader = info.get('uploader', 'Unknown')
+        # تحميل واستخراج الصوت
+        success = await download_with_retry(url, ydl_opts)
+        
+        if not success:
+            await query.edit_message_text("❌ *خطأ في استخراج الصوت*", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        # العثور على الملف المحمل
+        downloaded_file = None
+        for file in os.listdir(DOWNLOAD_PATH):
+            if file.endswith(('.mp3', '.m4a', '.opus', '.wav')):
+                downloaded_file = os.path.join(DOWNLOAD_PATH, file)
+                break
+        
+        if downloaded_file and os.path.exists(downloaded_file):
+            file_size = os.path.getsize(downloaded_file)
             
-            # عرض معلومات الصوت
-            info_text = f"🎵 *{title}*\n"
-            if duration:
-                info_text += f"⏱️ المدة: {duration//60}:{duration%60:02d}\n"
-            if uploader:
-                info_text += f"👤 القناة: {uploader}\n"
-            info_text += f"🎧 *جاري استخراج الصوت...*"
-            
-            await query.edit_message_text(info_text, parse_mode=ParseMode.MARKDOWN)
-            
-            # تحميل واستخراج الصوت
-            ydl.download([url])
-            
-            # العثور على الملف المحمل
-            downloaded_file = None
-            for file in os.listdir(DOWNLOAD_PATH):
-                if file.endswith(('.mp3', '.m4a', '.opus', '.wav')):
-                    downloaded_file = os.path.join(DOWNLOAD_PATH, file)
-                    break
-            
-            if downloaded_file and os.path.exists(downloaded_file):
-                file_size = os.path.getsize(downloaded_file)
-                
-                if file_size > MAX_FILE_SIZE:
-                    os.remove(downloaded_file)
-                    await query.edit_message_text(
-                        f"❌ *خطأ:* حجم الملف كبير جداً ({file_size / (1024*1024):.1f} MB)\n"
-                        f"الحد الأقصى المسموح: {MAX_FILE_SIZE / (1024*1024):.0f} MB",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                    return
-                
-                await query.edit_message_text("📤 *جاري رفع الملف الصوتي...*", parse_mode=ParseMode.MARKDOWN)
-                
-                # إرسال الملف الصوتي
-                with open(downloaded_file, 'rb') as audio:
-                    await query.message.reply_audio(
-                        audio=audio,
-                        caption=f"🎵 {title}",
-                        title=title,
-                        performer=uploader if uploader != 'Unknown' else None
-                    )
-                
-                # حذف الملف المؤقت
+            if file_size > MAX_FILE_SIZE:
                 os.remove(downloaded_file)
-                await query.edit_message_text("✅ *تم استخراج الصوت بنجاح!*", parse_mode=ParseMode.MARKDOWN)
-                
-                # تحديث الإحصائيات
-                if STATS_ENABLED:
-                    update_stats('audio_downloads')
-            else:
-                await query.edit_message_text("❌ *خطأ في استخراج الصوت*", parse_mode=ParseMode.MARKDOWN)
-                
+                await query.edit_message_text(
+                    f"❌ *خطأ:* حجم الملف كبير جداً ({file_size / (1024*1024):.1f} MB)\n"
+                    f"الحد الأقصى المسموح: {MAX_FILE_SIZE / (1024*1024):.0f} MB",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+            
+            await query.edit_message_text("📤 *جاري رفع الملف الصوتي...*", parse_mode=ParseMode.MARKDOWN)
+            
+            # إرسال الملف الصوتي
+            with open(downloaded_file, 'rb') as audio:
+                await query.message.reply_audio(
+                    audio=audio,
+                    caption=f"🎵 {os.path.basename(downloaded_file)}",
+                    title=os.path.basename(downloaded_file),
+                    performer="Unknown"
+                )
+            
+            # حذف الملف المؤقت
+            os.remove(downloaded_file)
+            await query.edit_message_text("✅ *تم استخراج الصوت بنجاح!*", parse_mode=ParseMode.MARKDOWN)
+            
+            # تحديث الإحصائيات
+            if STATS_ENABLED:
+                update_stats('audio_downloads')
+        else:
+            await query.edit_message_text("❌ *خطأ في استخراج الصوت*", parse_mode=ParseMode.MARKDOWN)
+            
     except yt_dlp.DownloadError as e:
         error_msg = str(e)
         if "Sign in to confirm you're not a bot" in error_msg:
@@ -730,6 +889,99 @@ async def handle_other_messages(update: Update, context: ContextTypes.DEFAULT_TY
         "YouTube, TikTok, Instagram, Facebook, Twitter, SoundCloud, Vimeo",
         parse_mode=ParseMode.MARKDOWN
     )
+
+def get_platform_name(url):
+    """الحصول على اسم المنصة من الرابط"""
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.lower()
+        
+        if 'youtube' in domain or 'youtu.be' in domain:
+            return "YouTube"
+        elif 'tiktok' in domain:
+            return "TikTok"
+        elif 'instagram' in domain:
+            return "Instagram"
+        elif 'facebook' in domain:
+            return "Facebook"
+        elif 'twitter' in domain or 'x.com' in domain:
+            return "Twitter/X"
+        elif 'soundcloud' in domain:
+            return "SoundCloud"
+        elif 'vimeo' in domain:
+            return "Vimeo"
+        else:
+            return "منصة مدعومة"
+    except:
+        return "غير معروف"
+
+def check_rate_limit(user_id: int) -> bool:
+    """فحص معدل الطلبات للمستخدم"""
+    current_time = time.time()
+    
+    if user_id not in user_request_tracker:
+        user_request_tracker[user_id] = []
+    
+    # إزالة الطلبات القديمة
+    user_request_tracker[user_id] = [
+        req_time for req_time in user_request_tracker[user_id]
+        if current_time - req_time < RATE_LIMIT_WINDOW
+    ]
+    
+    # فحص عدد الطلبات
+    if len(user_request_tracker[user_id]) >= RATE_LIMIT_REQUESTS:
+        return False
+    
+    # إضافة الطلب الحالي
+    user_request_tracker[user_id].append(current_time)
+    return True
+
+async def get_video_info(query, url):
+    """الحصول على معلومات الفيديو"""
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            title = info.get('title', 'غير معروف')
+            duration = info.get('duration', 0)
+            uploader = info.get('uploader', 'غير معروف')
+            view_count = info.get('view_count', 0)
+            
+            # تحويل المدة إلى تنسيق قابل للقراءة
+            if duration:
+                minutes, seconds = divmod(duration, 60)
+                duration_str = f"{minutes:02d}:{seconds:02d}"
+            else:
+                duration_str = "غير معروف"
+            
+            # تنسيق عدد المشاهدات
+            if view_count:
+                if view_count >= 1000000:
+                    view_str = f"{view_count/1000000:.1f}M"
+                elif view_count >= 1000:
+                    view_str = f"{view_count/1000:.1f}K"
+                else:
+                    view_str = str(view_count)
+            else:
+                view_str = "غير معروف"
+            
+            info_text = f"""
+ℹ️ *معلومات الفيديو:*
+• *العنوان:* {title}
+• *المدة:* {duration_str}
+• *المشرف:* {uploader}
+• *المشاهدات:* {view_str}
+"""
+            await query.edit_message_text(info_text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"خطأ في الحصول على معلومات الفيديو: {e}")
+        await query.edit_message_text("❌ *خطأ في الحصول على معلومات الفيديو*", parse_mode=ParseMode.MARKDOWN)
 
 def main():
     """تشغيل البوت مع نظام الإحصائيات"""
