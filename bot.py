@@ -221,7 +221,8 @@ if FLASK_AVAILABLE:
     def run_dashboard():
         """تشغيل خادم لوحة التحكم"""
         try:
-            dashboard_app.run(host='0.0.0.0', port=5002, debug=False, use_reloader=False)
+            port = int(os.environ.get('PORT', 5002))
+            dashboard_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
         except Exception as e:
             print(f"❌ خطأ في تشغيل لوحة التحكم: {e}")
 
@@ -641,9 +642,10 @@ def main():
     
     # تشغيل لوحة التحكم في thread منفصل
     if FLASK_AVAILABLE:
+        port = int(os.environ.get('PORT', 5002))
         dashboard_thread = threading.Thread(target=run_dashboard, daemon=True)
         dashboard_thread.start()
-        print("✅ تم تشغيل لوحة التحكم على: http://localhost:5002")
+        print(f"✅ تم تشغيل لوحة التحكم على: http://localhost:{port}")
     
     # إنشاء التطبيق
     application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
@@ -662,7 +664,8 @@ def main():
         try:
             print("🚀 بدء تشغيل البوت...")
             print("📊 نظام الإحصائيات: مفعل" if STATS_ENABLED else "📊 نظام الإحصائيات: غير مفعل")
-            print("🌐 لوحة التحكم: متاحة على http://localhost:5002" if FLASK_AVAILABLE else "🌐 لوحة التحكم: غير متاحة")
+            port = int(os.environ.get('PORT', 5002))
+            print(f"🌐 لوحة التحكم: متاحة على http://localhost:{port}" if FLASK_AVAILABLE else "🌐 لوحة التحكم: غير متاحة")
             print("✅ البوت يعمل الآن! اضغط Ctrl+C للإيقاف")
             
             application.run_polling(drop_pending_updates=True)
