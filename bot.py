@@ -46,6 +46,11 @@ def load_stats():
             with open(STATS_FILE, 'r', encoding='utf-8') as f:
                 loaded_stats = json.load(f)
                 bot_stats.update(loaded_stats)
+                
+                # تحويل قائمة المستخدمين إلى set للمعالجة السريعة
+                if 'users' in bot_stats and isinstance(bot_stats['users'], list):
+                    bot_stats['users'] = set(bot_stats['users'])
+                    
                 print("✅ تم تحميل الإحصائيات بنجاح")
         else:
             save_stats()
@@ -56,40 +61,66 @@ def load_stats():
 def save_stats():
     """حفظ الإحصائيات في الملف"""
     try:
+        # تحويل set إلى list للحفظ في JSON
+        stats_to_save = bot_stats.copy()
+        if 'users' in stats_to_save and isinstance(stats_to_save['users'], set):
+            stats_to_save['users'] = list(stats_to_save['users'])
+            
         with open(STATS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(bot_stats, f, ensure_ascii=False, indent=2)
+            json.dump(stats_to_save, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"⚠️ خطأ في حفظ الإحصائيات: {e}")
+
+def update_stats(stat_type: str, user_id: int = None):
+    """تحديث الإحصائيات"""
+    if not STATS_ENABLED:
+        return
+    
+    try:
+        if stat_type == 'total_users' and user_id:
+            # إضافة مستخدم جديد
+            if 'users' not in bot_stats:
+                bot_stats['users'] = set()
+            
+            if user_id not in bot_stats['users']:
+                bot_stats['users'].add(user_id)
+                bot_stats['total_users'] = len(bot_stats['users'])
+                
+        elif stat_type == 'video_downloads':
+            bot_stats['video_downloads'] = bot_stats.get('video_downloads', 0) + 1
+            bot_stats['total_downloads'] = bot_stats.get('total_downloads', 0) + 1
+            
+            # إحصائيات يومية
+            today = datetime.now().strftime("%Y-%m-%d")
+            if 'daily_stats' not in bot_stats:
+                bot_stats['daily_stats'] = {}
+            bot_stats['daily_stats'][today] = bot_stats['daily_stats'].get(today, 0) + 1
+            
+        elif stat_type == 'audio_downloads':
+            bot_stats['audio_downloads'] = bot_stats.get('audio_downloads', 0) + 1
+            bot_stats['total_downloads'] = bot_stats.get('total_downloads', 0) + 1
+            
+            # إحصائيات يومية
+            today = datetime.now().strftime("%Y-%m-%d")
+            if 'daily_stats' not in bot_stats:
+                bot_stats['daily_stats'] = {}
+            bot_stats['daily_stats'][today] = bot_stats['daily_stats'].get(today, 0) + 1
+        
+        # حفظ الإحصائيات
+        save_stats()
+        
+    except Exception as e:
+        logging.getLogger(__name__).error(f"خطأ في تحديث الإحصائيات: {e}")
 
 def add_user(user_id):
     """إضافة مستخدم جديد"""
     if STATS_ENABLED:
-        bot_stats["total_users"] = len(set(bot_stats.get("users", [])))
-        if "users" not in bot_stats:
-            bot_stats["users"] = []
-        if user_id not in bot_stats["users"]:
-            bot_stats["users"].append(user_id)
-            bot_stats["total_users"] = len(bot_stats["users"])
-            save_stats()
+        update_stats('total_users', user_id)
 
 def add_download(download_type):
     """إضافة تحميل جديد"""
     if STATS_ENABLED:
-        bot_stats["total_downloads"] += 1
-        if download_type == "video":
-            bot_stats["video_downloads"] += 1
-        elif download_type == "audio":
-            bot_stats["audio_downloads"] += 1
-        
-        # إحصائيات يومية
-        today = datetime.now().strftime("%Y-%m-%d")
-        if "daily_stats" not in bot_stats:
-            bot_stats["daily_stats"] = {}
-        if today not in bot_stats["daily_stats"]:
-            bot_stats["daily_stats"][today] = 0
-        bot_stats["daily_stats"][today] += 1
-        
-        save_stats()
+        update_stats(download_type)
 
 def get_stats():
     """الحصول على الإحصائيات"""
@@ -511,17 +542,11 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 # قائمة User-Agents متنوعة لتجنب الحظر
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/120.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/120.0',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/120.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36'
 ]
 
 # قائمة Accept-Language متنوعة
