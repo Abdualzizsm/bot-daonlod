@@ -825,67 +825,61 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"خطأ في إرسال رسالة الخطأ: {e}")
 
-def main() -> None:
+def main():
     """بدء تشغيل البوت"""
     print("🚀 جاري بدء تشغيل بوت التحميل الاحترافي...")
     
-    # إعادة تعيين webhook
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    loop.run_until_complete(reset_webhook())
-    time.sleep(2)  # انتظار قصير
-    
-    # إنشاء التطبيق
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    # إضافة معالجات الأوامر
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    
-    # معالج الأزرار
-    application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # معالج الرسائل النصية
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    # معالج الأخطاء
-    application.add_error_handler(error_handler)
-
-    print("✅ بوت التحميل الاحترافي جاهز!")
-    print("📱 المنصات المدعومة:")
-    for platform_name in SUPPORTED_PLATFORMS.values():
-        print(f"   • {platform_name}")
-    print("\n🔗 أرسل رابط فيديو للبوت لبدء التحميل!")
-    print("⏹️  اضغط Ctrl+C لإيقاف البوت")
-    
-    # تشغيل البوت مع retry
-    max_retries = 3
-    retry_count = 0
-    
-    while retry_count < max_retries:
-        try:
-            application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True  # تجاهل التحديثات المعلقة
-            )
-            break
-        except Conflict as e:
-            retry_count += 1
-            logger.error(f"تعارض في البوت (محاولة {retry_count}/{max_retries}): {e}")
-            if retry_count < max_retries:
-                print(f"⏳ إعادة المحاولة خلال {retry_count * 5} ثانية...")
-                time.sleep(retry_count * 5)
-                loop.run_until_complete(reset_webhook())
-            else:
-                print("❌ فشل في تشغيل البوت بعد عدة محاولات!")
+        # إعادة تعيين webhook
+        asyncio.run(reset_webhook())
+        time.sleep(2)  # انتظار قصير
+        
+        # إنشاء التطبيق
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # إضافة المعالجات
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+        application.add_handler(CallbackQueryHandler(button_callback))
+        application.add_error_handler(error_handler)
+        
+        # بدء البوت
+        print("🤖 تم بدء تشغيل البوت بنجاح!")
+        print("🔄 جاري بدء استقبال التحديثات...")
+        print("📱 المنصات المدعومة:")
+        for platform_name in set(SUPPORTED_PLATFORMS.values()):
+            print(f"   • {platform_name}")
+        print("\n🔗 أرسل رابط فيديو للبوت لبدء التحميل!")
+        
+        # بدء استقبال التحديثات مع إعادة المحاولة
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                application.run_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True
+                )
                 break
-        except Exception as e:
-            logger.error(f"خطأ عام في تشغيل البوت: {e}")
-            break
+            except Conflict as e:
+                retry_count += 1
+                logger.error(f"تعارض في البوت (محاولة {retry_count}/{max_retries}): {e}")
+                if retry_count < max_retries:
+                    wait_time = retry_count * 5
+                    print(f"⏳ إعادة المحاولة خلال {wait_time} ثوانٍ...")
+                    time.sleep(wait_time)
+                else:
+                    print("❌ فشل بدء البوت بعد عدة محاولات. الرجاء التحقق من السجلات.")
+                    raise
+            except Exception as e:
+                logger.error(f"حدث خطأ غير متوقع: {e}")
+                raise
+                
+    except Exception as e:
+        logger.error(f"حدث خطأ في الدالة الرئيسية: {e}")
+        raise
 
 if __name__ == '__main__':
     main()
