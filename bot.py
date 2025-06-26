@@ -168,13 +168,67 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📝 كيفية الاستخدام:
 1. أرسل رابط الفيديو
-2. اختر جودة التحميل
-3. انتظر التحميل
+2. انتظر التحميل
 
 ⚡ ابدأ بإرسال رابط الفيديو الآن!
 """
     
     await update.message.reply_text(welcome_message)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج أمر /help"""
+    help_text = """
+🆘 مساعدة البوت
+
+📱 المنصات المدعومة:
+• YouTube
+• TikTok  
+• Instagram
+• Facebook
+• Twitter/X
+• SoundCloud
+• Vimeo
+
+📝 الأوامر المتاحة:
+/start - بدء استخدام البوت
+/help - عرض هذه المساعدة
+/stats - عرض إحصائيات الاستخدام
+
+🔧 كيفية الاستخدام:
+1. أرسل رابط الفيديو مباشرة
+2. انتظر حتى يكتمل التحميل
+
+⚡ نصائح:
+• تأكد من صحة الرابط
+• بعض الفيديوهات قد تستغرق وقتاً أطول
+• يمكنك تحميل فيديو واحد في المرة
+"""
+    await update.message.reply_text(help_text)
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج أمر /stats"""
+    total_users = len(stats.get('unique_users', set()))
+    total_downloads = stats.get('total_downloads', 0)
+    
+    stats_text = f"""
+📊 إحصائيات البوت
+
+👥 إجمالي المستخدمين: {total_users}
+⬇️ إجمالي التحميلات: {total_downloads}
+
+🎯 شكراً لاستخدام البوت!
+"""
+    await update.message.reply_text(stats_text)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج الرسائل العامة"""
+    message_text = update.message.text
+    
+    # التحقق من وجود رابط في الرسالة
+    if any(platform in message_text.lower() for platform in ['youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com', 'facebook.com', 'twitter.com', 'x.com', 'soundcloud.com', 'vimeo.com']):
+        await handle_url(update, context)
+    else:
+        await handle_other_messages(update, context)
 
 async def get_video_info(url: str) -> Optional[dict]:
     """الحصول على معلومات الفيديو"""
@@ -266,145 +320,72 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⏱️ المدة: {format_duration(video_info['duration'])}
 👁️ المشاهدات: {format_number(video_info['view_count'])}
 
-اختر جودة التحميل:
+🔄 جاري تحميل الفيديو بأفضل جودة متاحة...
 """
         
-        # أزرار اختيار الجودة
-        keyboard = [
-            [
-                InlineKeyboardButton("🎬 فيديو عالي الجودة", callback_data=f"download_video_best_{user_id}"),
-                InlineKeyboardButton("🎬 فيديو متوسط", callback_data=f"download_video_medium_{user_id}")
-            ],
-            [
-                InlineKeyboardButton("🎵 صوت فقط", callback_data=f"download_audio_{user_id}"),
-                InlineKeyboardButton("📱 جودة منخفضة", callback_data=f"download_video_low_{user_id}")
-            ]
-        ]
+        await loading_msg.edit_text(info_text, parse_mode='Markdown')
         
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # حفظ الرابط مؤقتاً
-        context.user_data['current_url'] = url
-        
-        await loading_msg.edit_text(info_text, reply_markup=reply_markup, parse_mode='Markdown')
+        # تحميل الفيديو مباشرة
+        await download_video(update, url, user_id, loading_msg)
         
     except Exception as e:
         logger.error(f"❌ خطأ في معالجة الرابط: {e}")
         await loading_msg.edit_text("❌ حدث خطأ في معالجة الرابط. حاول مرة أخرى.")
 
-async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج أزرار التحميل"""
-    query = update.callback_query
-    await query.answer()
-    
-    data_parts = query.data.split('_')
-    if len(data_parts) < 3:
-        await query.edit_message_text("❌ خطأ في البيانات")
-        return
-    
-    download_type = data_parts[1]  # video أو audio
-    quality = data_parts[2] if len(data_parts) > 3 else 'best'
-    user_id = int(data_parts[-1])
-    
-    # التحقق من المستخدم
-    if query.from_user.id != user_id:
-        await query.answer("❌ لا يمكنك استخدام هذا الزر", show_alert=True)
-        return
-    
-    url = context.user_data.get('current_url')
-    if not url:
-        await query.edit_message_text("❌ انتهت صلاحية الرابط. أرسل الرابط مرة أخرى.")
-        return
-    
-    # رسالة التحميل
-    await query.edit_message_text("⬇️ جاري التحميل... قد يستغرق بعض الوقت")
-    
+async def download_video(update: Update, url: str, user_id: int, loading_msg):
+    """تحميل الفيديو"""
     try:
-        # إعداد مجلد التحميل
-        download_dir = Path("downloads")
-        download_dir.mkdir(exist_ok=True)
-        
-        # تحديد نوع التحميل
-        if download_type == 'audio':
-            format_selector = 'bestaudio/best'
-            file_ext = 'mp3'
-            stats_type = 'audio'
-        else:
-            if quality == 'best':
-                format_selector = 'best[height<=1080]'
-            elif quality == 'medium':
-                format_selector = 'best[height<=720]'
-            else:  # low
-                format_selector = 'worst'
-            file_ext = 'mp4'
-            stats_type = 'video'
-        
         # إعدادات التحميل
-        ydl_opts = get_ydl_opts(format_selector)
+        ydl_opts = get_ydl_opts('best')
         
-        # التحميل
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+            # تحميل الفيديو
+            await loading_msg.edit_text("⬇️ جاري تحميل الفيديو...")
+            
+            # تشغيل التحميل في thread منفصل
+            loop = asyncio.get_event_loop()
+            info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=True))
             
             # البحث عن الملف المحمل
-            downloaded_file = None
-            for file_path in download_dir.glob("*"):
-                if file_path.is_file() and info['title'] in file_path.name:
-                    downloaded_file = file_path
-                    break
+            filename = ydl.prepare_filename(info)
             
-            if not downloaded_file or not downloaded_file.exists():
-                await query.edit_message_text("❌ فشل في العثور على الملف المحمل")
-                return
-            
-            # فحص حجم الملف
-            file_size = downloaded_file.stat().st_size
-            max_size = 50 * 1024 * 1024  # 50 MB
-            
-            if file_size > max_size:
-                await query.edit_message_text(
-                    f"❌ الملف كبير جداً ({file_size/1024/1024:.1f} MB)\n"
-                    f"الحد الأقصى: 50 MB"
-                )
-                downloaded_file.unlink()  # حذف الملف
-                return
-            
-            # إرسال الملف
-            await query.edit_message_text("📤 جاري رفع الملف...")
-            
-            with open(downloaded_file, 'rb') as file:
-                if download_type == 'audio':
-                    await context.bot.send_audio(
-                        chat_id=query.message.chat_id,
-                        audio=file,
-                        title=info.get('title', 'صوت'),
-                        performer=info.get('uploader', 'غير معروف')
-                    )
+            # إرسال الفيديو
+            if os.path.exists(filename):
+                await loading_msg.edit_text("📤 جاري رفع الفيديو...")
+                
+                # التحقق من حجم الملف (حد Telegram 50MB)
+                file_size = os.path.getsize(filename)
+                if file_size > 50 * 1024 * 1024:  # 50MB
+                    await loading_msg.edit_text("❌ حجم الفيديو كبير جداً (أكثر من 50MB). جرب رابط آخر.")
                 else:
-                    await context.bot.send_video(
-                        chat_id=query.message.chat_id,
-                        video=file,
-                        caption=f"🎬 {info.get('title', 'فيديو')}"
-                    )
-            
-            # تحديث الإحصائيات
-            update_stats(user_id, stats_type)
-            
-            # حذف الملف المؤقت
-            downloaded_file.unlink()
-            
-            await query.edit_message_text("✅ تم التحميل بنجاح!")
-            
+                    with open(filename, 'rb') as video_file:
+                        await update.message.reply_video(
+                            video=video_file,
+                            caption=f"✅ تم تحميل الفيديو بنجاح!\n📹 {info.get('title', 'فيديو')}"
+                        )
+                    
+                    # تحديث الإحصائيات
+                    update_stats(user_id, 'video')
+                    
+                    await loading_msg.edit_text("✅ تم إرسال الفيديو بنجاح!")
+                
+                # حذف الملف المؤقت
+                try:
+                    os.remove(filename)
+                except:
+                    pass
+            else:
+                await loading_msg.edit_text("❌ فشل في تحميل الفيديو. حاول مرة أخرى.")
+                
     except Exception as e:
-        logger.error(f"❌ خطأ في التحميل: {e}")
-        await query.edit_message_text(f"❌ فشل التحميل: {str(e)[:100]}")
+        logger.error(f"❌ خطأ في تحميل الفيديو: {e}")
+        await loading_msg.edit_text("❌ حدث خطأ أثناء التحميل. حاول مرة أخرى.")
         
         # تنظيف الملفات المؤقتة
         try:
-            for file_path in Path("downloads").glob("*"):
-                if file_path.is_file():
-                    file_path.unlink()
+            for file in os.listdir('.'):
+                if file.endswith(('.mp4', '.webm', '.mkv', '.avi')):
+                    os.remove(file)
         except:
             pass
 
@@ -441,7 +422,7 @@ async def run_bot():
             # إضافة المعالجات
             application.add_handler(CommandHandler("start", start))
             application.add_handler(CommandHandler("help", help_command))
-            application.add_handler(CommandHandler("stats", stats))
+            application.add_handler(CommandHandler("stats", stats_command))
             application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             application.add_error_handler(error_handler)
             
