@@ -60,17 +60,33 @@ SUPPORTED_PLATFORMS = {
 async def reset_webhook():
     """إعادة تعيين webhook للبوت"""
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
-        response = requests.post(url)
-        if response.status_code == 200:
-            logger.info("✅ تم حذف webhook بنجاح!")
-            return True
-        else:
-            logger.error(f"❌ فشل في حذف webhook: {response.text}")
-            return False
+        # إنشاء جلسة HTTP
+        session = aiohttp.ClientSession()
+        
+        # حذف webhook الحالي
+        delete_url = f'https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook'
+        async with session.get(delete_url) as response:
+            result = await response.json()
+            if result.get('ok'):
+                logger.info("✅ تم حذف webhook بنجاح!")
+            else:
+                logger.warning(f"⚠️ لم يتم العثور على webhook: {result}")
+        
+        # تعطيل webhook
+        set_url = f'https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url='
+        async with session.get(set_url) as response:
+            result = await response.json()
+            if result.get('ok'):
+                logger.info("✅ تم تعطيل webhook بنجاح!")
+            else:
+                logger.error(f"❌ فشل في تعطيل webhook: {result}")
+                
     except Exception as e:
         logger.error(f"❌ خطأ في إعادة تعيين webhook: {e}")
-        return False
+        raise
+    finally:
+        if 'session' in locals():
+            await session.close()
 
 class DownloadBot:
     def __init__(self):
@@ -825,14 +841,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"خطأ في إرسال رسالة الخطأ: {e}")
 
-def main():
+async def main():
     """بدء تشغيل البوت"""
     print("🚀 جاري بدء تشغيل بوت التحميل الاحترافي...")
     
     try:
         # إعادة تعيين webhook
-        asyncio.run(reset_webhook())
-        time.sleep(2)  # انتظار قصير
+        await reset_webhook()
+        await asyncio.sleep(2)  # انتظار قصير
         
         # إنشاء التطبيق
         application = Application.builder().token(BOT_TOKEN).build()
@@ -852,34 +868,21 @@ def main():
             print(f"   • {platform_name}")
         print("\n🔗 أرسل رابط فيديو للبوت لبدء التحميل!")
         
-        # بدء استقبال التحديثات مع إعادة المحاولة
-        max_retries = 3
-        retry_count = 0
+        # بدء استقبال التحديثات
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
         
-        while retry_count < max_retries:
-            try:
-                application.run_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True
-                )
-                break
-            except Conflict as e:
-                retry_count += 1
-                logger.error(f"تعارض في البوت (محاولة {retry_count}/{max_retries}): {e}")
-                if retry_count < max_retries:
-                    wait_time = retry_count * 5
-                    print(f"⏳ إعادة المحاولة خلال {wait_time} ثوانٍ...")
-                    time.sleep(wait_time)
-                else:
-                    print("❌ فشل بدء البوت بعد عدة محاولات. الرجاء التحقق من السجلات.")
-                    raise
-            except Exception as e:
-                logger.error(f"حدث خطأ غير متوقع: {e}")
-                raise
+        # تشغيل البوت حتى يتم إيقافه
+        await application.updater.stop()
+        await application.stop()
                 
     except Exception as e:
         logger.error(f"حدث خطأ في الدالة الرئيسية: {e}")
         raise
+
+if __name__ == '__main__':
+    asyncio.run(main())
 
 if __name__ == '__main__':
     main()
