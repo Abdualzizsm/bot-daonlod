@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Dict, Set, Optional
 
 import yt_dlp
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError, Conflict
 from dotenv import load_dotenv
 
@@ -426,11 +426,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def run_bot():
-    """تشغيل البوت"""
+    """تشغيل البوت مع إعادة المحاولة في حالة الأخطاء"""
     max_retries = 5
     retry_delay = 5
     
     for attempt in range(max_retries):
+        application = None
         try:
             logger.info(f"🚀 محاولة تشغيل البوت #{attempt + 1}")
             
@@ -439,13 +440,20 @@ async def run_bot():
             
             # إضافة المعالجات
             application.add_handler(CommandHandler("start", start))
-            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
-            application.add_handler(CallbackQueryHandler(download_callback))
+            application.add_handler(CommandHandler("help", help_command))
+            application.add_handler(CommandHandler("stats", stats))
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             application.add_error_handler(error_handler)
             
-            # تحميل الإحصائيات
-            load_stats()
+            # حذف webhook إذا كان موجوداً
+            try:
+                await application.bot.delete_webhook(drop_pending_updates=True)
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.warning(f"⚠️ تحذير عند حذف webhook: {e}")
             
+            # تهيئة التطبيق
+            await application.initialize()
             logger.info("✅ البوت يعمل الآن...")
             
             # تشغيل البوت
@@ -454,8 +462,17 @@ async def run_bot():
                 allowed_updates=['message', 'callback_query']
             )
             
+            # إذا وصلنا هنا، فالبوت توقف بشكل طبيعي
+            break
+            
         except Conflict as e:
             logger.warning(f"⚠️ تعارض Telegram: {e}")
+            if application:
+                try:
+                    await application.shutdown()
+                except:
+                    pass
+            
             if attempt < max_retries - 1:
                 wait_time = retry_delay * (2 ** attempt) + random.uniform(1, 5)
                 logger.info(f"⏳ إعادة المحاولة بعد {wait_time:.1f} ثانية...")
@@ -466,6 +483,12 @@ async def run_bot():
                 
         except Exception as e:
             logger.error(f"❌ خطأ في تشغيل البوت: {e}")
+            if application:
+                try:
+                    await application.shutdown()
+                except:
+                    pass
+            
             if attempt < max_retries - 1:
                 wait_time = retry_delay * (2 ** attempt)
                 logger.info(f"⏳ إعادة المحاولة بعد {wait_time} ثانية...")
@@ -473,10 +496,22 @@ async def run_bot():
             else:
                 logger.error("❌ فشل في تشغيل البوت بعد عدة محاولات")
                 break
+        
+        finally:
+            # تنظيف التطبيق
+            if application:
+                try:
+                    await application.shutdown()
+                except:
+                    pass
 
 def main():
     """الدالة الرئيسية"""
     try:
+        # تحميل الإحصائيات
+        load_stats()
+        
+        # تشغيل البوت
         asyncio.run(run_bot())
     except KeyboardInterrupt:
         logger.info("🛑 تم إيقاف البوت بواسطة المستخدم")

@@ -1,5 +1,5 @@
 services:
-  - type: web
+  - type: worker
     name: telegram-bot-dashboard
     env: python
     runtime: python-3.11.9
@@ -9,5 +9,3 @@ services:
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-    healthCheckPath: /
-    port: 5002
