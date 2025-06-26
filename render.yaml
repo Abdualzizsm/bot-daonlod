@@ -3,7 +3,9 @@ services:
     name: telegram-bot-dashboard
     env: python
     runtime: python-3.11.9
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      apt-get update && apt-get install -y ffmpeg
+      pip install -r requirements.txt
     startCommand: python bot.py
     plan: free
     envVars:
