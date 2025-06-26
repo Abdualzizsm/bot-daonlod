@@ -1,13 +1,11 @@
 services:
-  - type: worker
-    name: telegram-bot-dashboard
+  - type: web
+    name: telegram-bot
     env: python
-    runtime: python-3.11.9
-    buildCommand: |
-      apt-get update && apt-get install -y ffmpeg
-      pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
-    plan: free
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false
+        description: "توكن بوت تيليجرام الخاص بك"
+        required: true
+    plan: free
