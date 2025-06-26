@@ -1,6 +1,4 @@
 python-telegram-bot==21.9
 yt-dlp
-requests
 python-dotenv==1.0.0
-ffmpeg-python
-Flask==3.0.0
+requests
