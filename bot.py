@@ -841,15 +841,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"خطأ في إرسال رسالة الخطأ: {e}")
 
-async def main():
+def main():
     """بدء تشغيل البوت"""
     print("🚀 جاري بدء تشغيل بوت التحميل الاحترافي...")
     
     try:
-        # إعادة تعيين webhook
-        await reset_webhook()
-        await asyncio.sleep(2)  # انتظار قصير
-        
         # إنشاء التطبيق
         application = Application.builder().token(BOT_TOKEN).build()
         
@@ -869,20 +865,14 @@ async def main():
         print("\n🔗 أرسل رابط فيديو للبوت لبدء التحميل!")
         
         # بدء استقبال التحديثات
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling()
-        
-        # تشغيل البوت حتى يتم إيقافه
-        await application.updater.stop()
-        await application.stop()
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
                 
     except Exception as e:
         logger.error(f"حدث خطأ في الدالة الرئيسية: {e}")
         raise
-
-if __name__ == '__main__':
-    asyncio.run(main())
 
 if __name__ == '__main__':
     main()
